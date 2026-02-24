@@ -1,4 +1,5 @@
 import io
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -6,7 +7,36 @@ import streamlit as st
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="InventoryFlow (🟢🟡🔴)", layout="wide")
 
-st.title("🟢🟡🔴 InventoryFlow")
+# ---------------- ACCESS GATE ----------------
+# Forventes sat i Streamlit Cloud Secrets som:
+# ACCESS_CODES='["brand-7d","brand-14d","brand-30d"]'
+if "ACCESS_CODES" not in st.secrets:
+    st.error("Missing ACCESS_CODES in Streamlit Secrets.")
+    st.info(
+        "Go to Streamlit Cloud → Manage app → Settings → Secrets and add:\n\n"
+        'ACCESS_CODES=\'["supp-14d","supp-30d"]\''
+    )
+    st.stop()
+
+try:
+    ACCESS_CODES = json.loads(st.secrets["ACCESS_CODES"])
+except Exception as e:
+    st.error(f"ACCESS_CODES in Secrets is not valid JSON. Error: {e}")
+    st.info('Example:\nACCESS_CODES=\'["supp-14d","brandx-14d","brandx-30d"]\'')
+    st.stop()
+
+st.title("InventoryFlow (Beta)")
+
+code = st.text_input("Enter access code", type="password")
+
+if code not in ACCESS_CODES:
+    st.warning("No access. Enter a valid beta code.")
+    st.stop()
+
+st.success("Access granted ✅")
+
+# ---------------- APP HEADER ----------------
+st.markdown("## 🟢🟡🔴 InventoryFlow")
 st.caption(
     "Upload en CSV eller Excel-fil og få et klart 🟢🟡🔴 overblik "
     "over dit lagerflow baseret på salgstempo + (valgfrit) økonomisk impact i kroner."
