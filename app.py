@@ -1,5 +1,9 @@
 import io
 import json
+import os
+import hashlib
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -30,6 +34,23 @@ if code not in ACCESS_CODES:
     st.stop()
 
 st.success("Access granted ✅")
+
+# ---------------- EMAIL (FOR BETA FOLLOW-UP) ----------------
+st.markdown("### ✅ Beta info")
+user_email = st.text_input("Your email (so I can send your beta link + follow up for feedback)", placeholder="you@brand.com")
+
+consent = st.checkbox(
+    "I agree InventoryFlow stores only usage metadata (SKU count + 🟢🟡🔴 counts) for product improvement. No CSV is stored.",
+    value=True,
+)
+
+if not user_email or "@" not in user_email:
+    st.info("Enter your email above to continue (used only for beta follow-up).")
+    st.stop()
+
+if not consent:
+    st.warning("Consent is required for beta access in this build (since we log only metadata).")
+    st.stop()
 
 # ---------------- APP HEADER ----------------
 st.markdown("## 🟢🟡🔴 InventoryFlow")
@@ -95,7 +116,7 @@ div[data-testid="stMetric"]{
 )
 
 # bump when logic changes (forces cache refresh)
-CACHE_VERSION = 24  # <- bump due to big metric card wrap fix
+CACHE_VERSION = 25  # <- bump due to beta logging + email gate
 
 # ---------------- HELPERS ----------------
 def read_file(file) -> pd.DataFrame:
@@ -176,6 +197,64 @@ def render_big_metric(label: str, value: str, sub: str = ""):
 """,
         unsafe_allow_html=True,
     )
+
+
+def _file_fingerprint(uploaded_file) -> str:
+    """Stable fingerprint so we can log only once per upload."""
+    raw = uploaded_file.getvalue()
+    h = hashlib.md5(raw).hexdigest()
+    return f"{uploaded_file.name}:{len(raw)}:{h}"
+
+
+def log_beta_metadata_once(result_df: pd.DataFrame, email: str, uploaded_file, rules: dict):
+    """
+    Stores ONLY metadata:
+    - timestamp, email
+    - file fingerprint (not content)
+    - SKU count + 🟢🟡🔴 counts
+    - rule settings (green/yellow/deadstock)
+    No CSV is stored.
+    """
+    try:
+        fp = _file_fingerprint(uploaded_file)
+        if "logged_fingerprints" not in st.session_state:
+            st.session_state.logged_fingerprints = set()
+
+        if fp in st.session_state.logged_fingerprints:
+            return  # already logged this upload
+
+        s = result_df["Status"].astype(str)
+        red = int(s.str.startswith("🔴").sum())
+        yellow = int(s.str.startswith("🟡").sum())
+        green = int(s.str.startswith("🟢").sum())
+        total = int(len(result_df))
+
+        log_row = {
+            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "email": email.strip().lower(),
+            "file_fp": fp,  # fingerprint only
+            "total_skus": total,
+            "green": green,
+            "yellow": yellow,
+            "red": red,
+            "green_max_days": rules.get("green_max"),
+            "yellow_max_days": rules.get("yellow_max"),
+            "dead_stock_days": rules.get("dead_stock_days"),
+            "details_on": bool(rules.get("show_details")),
+        }
+
+        log_df = pd.DataFrame([log_row])
+        file_path = "beta_log.csv"
+
+        if os.path.exists(file_path):
+            log_df.to_csv(file_path, mode="a", header=False, index=False)
+        else:
+            log_df.to_csv(file_path, index=False)
+
+        st.session_state.logged_fingerprints.add(fp)
+    except Exception:
+        # We intentionally fail silently so beta users don't get blocked by logging issues
+        pass
 
 
 # ---------------- COMPUTE ----------------
@@ -802,6 +881,19 @@ if uploaded:
             int(dead_stock_days),
             bool(show_details),
             CACHE_VERSION,
+        )
+
+        # ✅ LOG ONLY METADATA (ONCE PER UPLOAD)
+        log_beta_metadata_once(
+            result_df=result,
+            email=user_email,
+            uploaded_file=uploaded,
+            rules={
+                "green_max": int(green_max),
+                "yellow_max": int(yellow_max),
+                "dead_stock_days": int(dead_stock_days),
+                "show_details": bool(show_details),
+            },
         )
 
         with tab_overview:
