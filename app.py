@@ -18,13 +18,7 @@ if "ACCESS_CODES" not in st.secrets:
     )
     st.stop()
 
-try:
-    ACCESS_CODES = json.loads(st.secrets["ACCESS_CODES"])
-except Exception as e:
-    st.error(f"ACCESS_CODES in Secrets is not valid JSON. Error: {e}")
-    st.info('Example:\nACCESS_CODES=\'["supp-14d","brandx-14d","brandx-30d"]\'')
-    st.stop()
-
+ACCESS_CODES = st.secrets["ACCESS_CODES"]
 st.title("InventoryFlow (Beta)")
 
 code = st.text_input("Enter access code", type="password")
@@ -825,3 +819,4 @@ else:
         st.info("Upload en fil for at se alle produkter.")
     with tab_settings:
         st.info("Upload en fil for at få download-knapper.")
+
