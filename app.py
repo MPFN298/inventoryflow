@@ -8,23 +8,25 @@ import streamlit as st
 st.set_page_config(page_title="InventoryFlow (🟢🟡🔴)", layout="wide")
 
 # ---------------- ACCESS GATE ----------------
-# Forventes sat i Streamlit Cloud Secrets som:
+# Expected in Streamlit Cloud Secrets, e.g.:
 # ACCESS_CODES='["brand-7d","brand-14d","brand-30d"]'
 if "ACCESS_CODES" not in st.secrets:
     st.error("Missing ACCESS_CODES in Streamlit Secrets.")
     st.info(
         "Go to Streamlit Cloud → Manage app → Settings → Secrets and add:\n\n"
-        'ACCESS_CODES=\'["supp-14d","supp-30d"]\''
+        'ACCESS_CODES=\'["brand-14d","brand-30d"]\''
     )
     st.stop()
 
 ACCESS_CODES = st.secrets["ACCESS_CODES"]
+
+# ---------------- APP TITLE + LOGIN ----------------
 st.title("InventoryFlow (Beta)")
 
 code = st.text_input("Enter access code", type="password")
 
 if code not in ACCESS_CODES:
-    st.warning("No access. Enter a valid beta code.")
+    st.warning("Access denied. Please enter a valid beta code.")
     st.stop()
 
 st.success("Access granted ✅")
@@ -32,15 +34,16 @@ st.success("Access granted ✅")
 # ---------------- APP HEADER ----------------
 st.markdown("## 🟢🟡🔴 InventoryFlow")
 st.caption(
-    "Upload en CSV eller Excel-fil og få et klart 🟢🟡🔴 overblik "
-    "over dit lagerflow baseret på salgstempo + (valgfrit) økonomisk impact i kroner."
+    "**Inventory clarity for Shopify brands.** "
+    "Upload a CSV or Excel file and get instant 🟢🟡🔴 stock risk signals "
+    "based on sales velocity — with optional financial impact (in your currency)."
 )
 
-# ✅ Pro CSS: Streamlit metrics + vores egne “big metric cards” (fixer tal-wrap pænt)
+# ✅ Pro CSS: Streamlit metrics + our “big metric cards” (prevents number wrapping)
 st.markdown(
     """
 <style>
-/* Streamlit metrics: ingen ellipsis, ingen clipping */
+/* Streamlit metrics: no ellipsis, no clipping */
 div[data-testid="stMetricValue"]{
     white-space: nowrap !important;
     overflow: visible !important;
@@ -52,7 +55,7 @@ div[data-testid="stMetric"]{
     min-width: 0 !important;
 }
 
-/* Vores “pro” big-number kort */
+/* “Pro” big-number cards */
 .if-card{
     border: 1px solid rgba(49, 51, 63, 0.12);
     border-radius: 12px;
@@ -71,12 +74,12 @@ div[data-testid="stMetric"]{
     font-weight: 800;
     line-height: 1.1;
 
-    /* vigtig: vi må gerne wrappe, men IKKE midt i tal */
+    /* Important: allow wrapping, but not mid-number */
     white-space: normal;
     overflow-wrap: normal;
     word-break: normal;
 
-    font-variant-numeric: tabular-nums; /* “dashboard” tal */
+    font-variant-numeric: tabular-nums;
 }
 .if-num{ white-space: nowrap; }
 .if-unit{ white-space: nowrap; opacity: 0.9; }
@@ -92,7 +95,7 @@ div[data-testid="stMetric"]{
 )
 
 # bump when logic changes (forces cache refresh)
-CACHE_VERSION = 24  # <- bump pga PRO-wrap fix på big metric cards
+CACHE_VERSION = 24  # <- bump due to big metric card wrap fix
 
 # ---------------- HELPERS ----------------
 def read_file(file) -> pd.DataFrame:
@@ -106,10 +109,12 @@ def read_file(file) -> pd.DataFrame:
     elif name.endswith(".xlsx"):
         return pd.read_excel(file)
     else:
-        raise ValueError("Ukendt filtype")
+        raise ValueError("Unknown file type")
 
 
 def fmt_kr(x) -> str:
+    """Kept for compatibility with your current formatting style.
+    If you later want true multi-currency formatting, we can rename this to fmt_money."""
     try:
         v = float(x)
     except Exception:
@@ -123,26 +128,26 @@ def _safe_num_series(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").astype("float64")
 
 
-def kort_handling(action: str) -> str:
+def short_action(action: str) -> str:
     a = (action or "").lower()
-    if "ret data" in a or "fix data" in a:
-        return "ret data"
-    if "afviklingsplan" in a or "udfasning" in a or "afvikling" in a:
-        return "afvikling"
-    if "genbestilling" in a and ("pause" in a or "stop" in a):
-        return "pause genbestilling"
-    if "pris" in a or "kampagne" in a or "pakkeløsning" in a or "bundle" in a or "markdown" in a:
-        return "pris/kampagne"
-    if "stop indkøb" in a or "stop køb" in a:
-        return "stop indkøb"
-    return "næste skridt"
+    if "fix data" in a or "correct data" in a:
+        return "fix data"
+    if "phase-out plan" in a or "phase out" in a or "liquidation" in a:
+        return "phase out"
+    if "reorder" in a and ("pause" in a or "stop" in a):
+        return "pause reorders"
+    if "price" in a or "campaign" in a or "bundle" in a or "markdown" in a:
+        return "pricing/promo"
+    if "stop purchasing" in a or "stop buying" in a:
+        return "stop purchasing"
+    return "next step"
 
 
 def df_for_display(df: pd.DataFrame) -> pd.DataFrame:
     disp = df.copy()
-    text_cols = ["Status", "Produkt", "Hvorfor", "Anbefalet handling", "Prioritet (forklaring)"]
-    if "Hvorfor (detaljer)" in disp.columns:
-        text_cols.append("Hvorfor (detaljer)")
+    text_cols = ["Status", "Product", "Why", "Recommended action", "Priority (why)"]
+    if "Why (details)" in disp.columns:
+        text_cols.append("Why (details)")
     for c in text_cols:
         if c in disp.columns:
             disp[c] = disp[c].replace({None: ""}).fillna("")
@@ -184,11 +189,11 @@ def _compute_flow_core(
     required = {"product_name", "stock_qty", "sales_30d"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Mangler kolonner: {', '.join(sorted(missing))}")
+        raise ValueError(f"Missing columns: {', '.join(sorted(missing))}")
 
     out = df.copy()
 
-    # Valgfri indkøbspris
+    # Optional unit cost
     has_cost = "unit_cost" in out.columns
     if has_cost:
         out["unit_cost"] = pd.to_numeric(out["unit_cost"], errors="coerce")
@@ -202,7 +207,7 @@ def _compute_flow_core(
     sales30_missing = out["sales_30d"].isna() | ~np.isfinite(out["sales_30d"])
     stock_invalid = stock_missing | (out["stock_qty"] < 0)
 
-    # Dødt lager-vindue (kræver fx sales_90d, sales_180d osv.)
+    # Dead stock window (requires e.g. sales_90d, sales_180d, etc.)
     window_col = f"sales_{int(dead_stock_days_val)}d"
     has_window = window_col in out.columns
 
@@ -243,86 +248,86 @@ def _compute_flow_core(
     mask_yellow = finite_days & (out["stock_days"] > green_max_val) & (out["stock_days"] <= yellow_max_val)
     mask_red = finite_days & (out["stock_days"] > yellow_max_val)
 
-    # ✅ Status (100% dansk)
-    out["Status"] = "🟢 OK"
-    out.loc[mask_yellow, "Status"] = "🟡 Risiko"
-    out.loc[mask_red, "Status"] = "🔴 Kritisk"
+    # ✅ Status (English)
+    out["Status"] = "🟢 Healthy"
+    out.loc[mask_yellow, "Status"] = "🟡 At risk"
+    out.loc[mask_red, "Status"] = "🔴 Critical"
 
-    out.loc[slow_mover, "Status"] = "🟡 Langsomt omsat"
-    out.loc[dead_stock, "Status"] = "🔴 Dødt lager"
-    out.loc[data_issue, "Status"] = "🔴 Dataproblem"
+    out.loc[slow_mover, "Status"] = "🟡 Slow mover"
+    out.loc[dead_stock, "Status"] = "🔴 Dead stock"
+    out.loc[data_issue, "Status"] = "🔴 Data issue"
 
-    # Hvorfor (kort + ren)
-    out["Hvorfor"] = ""
-    out["Hvorfor (detaljer)"] = ""
+    # Why (short + clean)
+    out["Why"] = ""
+    out["Why (details)"] = ""
 
-    out.loc[data_issue & stock_missing & sales30_missing, "Hvorfor"] = "Mangler lager + salg"
-    out.loc[data_issue & stock_missing & ~sales30_missing, "Hvorfor"] = "Mangler lager"
-    out.loc[data_issue & ~stock_missing & sales30_missing, "Hvorfor"] = "Mangler salg"
-    out.loc[data_issue & (out["stock_qty"] < 0), "Hvorfor"] = "Negativt lager"
+    out.loc[data_issue & stock_missing & sales30_missing, "Why"] = "Missing stock + sales"
+    out.loc[data_issue & stock_missing & ~sales30_missing, "Why"] = "Missing stock"
+    out.loc[data_issue & ~stock_missing & sales30_missing, "Why"] = "Missing sales"
+    out.loc[data_issue & (out["stock_qty"] < 0), "Why"] = "Negative stock"
 
     if has_window:
-        out.loc[dead_stock, "Hvorfor"] = f"0 salg i {int(dead_stock_days_val)} dage"
-        out.loc[slow_mover, "Hvorfor"] = "0 salg i 30 dage"
+        out.loc[dead_stock, "Why"] = f"0 sales in the last {int(dead_stock_days_val)} days"
+        out.loc[slow_mover, "Why"] = "0 sales in the last 30 days"
     else:
-        out.loc[dead_stock if dead_stock_days_val <= 30 else slow_mover, "Hvorfor"] = "0 salg i 30 dage"
+        out.loc[dead_stock if dead_stock_days_val <= 30 else slow_mover, "Why"] = "0 sales in the last 30 days"
 
-    out.loc[mask_green, "Hvorfor"] = f"≤ {int(green_max_val)} dage"
-    out.loc[mask_yellow, "Hvorfor"] = f"Over {int(green_max_val)} dage"
-    out.loc[mask_red, "Hvorfor"] = f"Over {int(yellow_max_val)} dage"
+    out.loc[mask_green, "Why"] = f"≤ {int(green_max_val)} days of stock"
+    out.loc[mask_yellow, "Why"] = f"Over {int(green_max_val)} days of stock"
+    out.loc[mask_red, "Why"] = f"Over {int(yellow_max_val)} days of stock"
 
     if show_details_val:
-        out.loc[mask_green, "Hvorfor (detaljer)"] = (
+        out.loc[mask_green, "Why (details)"] = (
             out.loc[mask_green, "stock_days"].round(0).astype(int).astype(str)
-            + " lagerdage · "
+            + " stock days · "
             + out.loc[mask_green, "per_day"].round(2).astype(str)
-            + " solgt/dag"
+            + " sold/day"
         )
-        out.loc[mask_yellow, "Hvorfor (detaljer)"] = (
+        out.loc[mask_yellow, "Why (details)"] = (
             out.loc[mask_yellow, "stock_days"].round(0).astype(int).astype(str)
-            + " lagerdage · "
+            + " stock days · "
             + out.loc[mask_yellow, "per_day"].round(2).astype(str)
-            + " solgt/dag"
+            + " sold/day"
         )
-        out.loc[mask_red, "Hvorfor (detaljer)"] = (
+        out.loc[mask_red, "Why (details)"] = (
             out.loc[mask_red, "stock_days"].round(0).astype(int).astype(str)
-            + " lagerdage · "
+            + " stock days · "
             + out.loc[mask_red, "per_day"].round(2).astype(str)
-            + " solgt/dag"
+            + " sold/day"
         )
 
         if has_window:
-            out.loc[dead_stock, "Hvorfor (detaljer)"] = f"{window_col} = 0"
-            out.loc[slow_mover, "Hvorfor (detaljer)"] = f"sales_30d = 0 men {window_col} > 0"
+            out.loc[dead_stock, "Why (details)"] = f"{window_col} = 0"
+            out.loc[slow_mover, "Why (details)"] = f"sales_30d = 0 but {window_col} > 0"
         else:
             if dead_stock_days_val <= 30:
-                out.loc[dead_stock, "Hvorfor (detaljer)"] = "sales_30d = 0 (tærskel ≤ 30)"
+                out.loc[dead_stock, "Why (details)"] = "sales_30d = 0 (threshold ≤ 30)"
             else:
-                out.loc[slow_mover, "Hvorfor (detaljer)"] = "Kun sales_30d i filen → langsomt omsat"
+                out.loc[slow_mover, "Why (details)"] = "Only sales_30d provided → treated as slow mover"
 
-    out.loc[out["Hvorfor"].eq(""), "Hvorfor"] = "Tjek data"
+    out.loc[out["Why"].eq(""), "Why"] = "Check input data"
 
-    # ✅ Handling (100% dansk)
-    out["Anbefalet handling"] = ""
-    out.loc[data_issue, "Anbefalet handling"] = "Ret data først (lager/salg)"
-    out.loc[dead_stock, "Anbefalet handling"] = "Stop indkøb + lav afviklingsplan (pakkeløsning/pris/udfasning)"
-    out.loc[slow_mover, "Anbefalet handling"] = "Vurdér: sæson/rare? Hvis nej → afviklingsplan"
-    out.loc[mask_green, "Anbefalet handling"] = "OK – hold niveau"
-    out.loc[mask_yellow, "Anbefalet handling"] = "Sæt genbestilling på pause + tjek forecast"
-    out.loc[mask_red, "Anbefalet handling"] = "Stop indkøb + reducer lager (kampagne/pakkeløsning/pris)"
+    # ✅ Recommended action (English, Shopify-operator tone)
+    out["Recommended action"] = ""
+    out.loc[data_issue, "Recommended action"] = "Fix input data first (stock/sales)"
+    out.loc[dead_stock, "Recommended action"] = "Stop reorders + run a liquidation plan (bundles/markdown/phase-out)"
+    out.loc[slow_mover, "Recommended action"] = "Check seasonality/one-off demand. If not → liquidation plan"
+    out.loc[mask_green, "Recommended action"] = "Healthy — maintain"
+    out.loc[mask_yellow, "Recommended action"] = "Pause reorders + sanity-check demand"
+    out.loc[mask_red, "Recommended action"] = "Stop reorders + reduce inventory (promo/bundles/price moves)"
 
     # Output
-    out["Produkt"] = out["product_name"].astype(str)
-    out["Lager (mængde)"] = out["stock_qty"].round(0)
+    out["Product"] = out["product_name"].astype(str)
+    out["Stock (units)"] = out["stock_qty"].round(0)
 
-    out["Lagerdage"] = np.nan
-    out.loc[finite_days, "Lagerdage"] = out.loc[finite_days, "stock_days"].round(0)
+    out["Days of stock"] = np.nan
+    out.loc[finite_days, "Days of stock"] = out.loc[finite_days, "stock_days"].round(0)
 
-    out["Stop indkøb → tomt om"] = np.nan
-    out.loc[finite_days, "Stop indkøb → tomt om"] = out.loc[finite_days, "stock_days"].round(0)
+    out["If you stop reordering: OOS in"] = np.nan
+    out.loc[finite_days, "If you stop reordering: OOS in"] = out.loc[finite_days, "stock_days"].round(0)
 
-    out["Bundet kapital"] = np.nan
-    out["Overlager (kr)"] = np.nan
+    out["Capital tied up"] = np.nan
+    out["Excess stock (value)"] = np.nan
 
     # econ helpers
     out["_econ_over"] = 0.0
@@ -331,7 +336,7 @@ def _compute_flow_core(
     if has_cost:
         cost_ok = out["unit_cost"].notna() & np.isfinite(out["unit_cost"]) & (out["unit_cost"] >= 0)
         cap_mask = (~stock_invalid) & cost_ok
-        out.loc[cap_mask, "Bundet kapital"] = (out.loc[cap_mask, "stock_qty"] * out.loc[cap_mask, "unit_cost"]).astype(float)
+        out.loc[cap_mask, "Capital tied up"] = (out.loc[cap_mask, "stock_qty"] * out.loc[cap_mask, "unit_cost"]).astype(float)
 
         target_units_green = pd.Series(np.nan, index=out.index, dtype="float64")
         target_units_green.loc[finite_days] = out.loc[finite_days, "per_day"] * float(green_max_val)
@@ -339,11 +344,11 @@ def _compute_flow_core(
         excess_units = pd.Series(np.nan, index=out.index, dtype="float64")
         excess_units.loc[finite_days] = np.maximum(out.loc[finite_days, "stock_qty"] - target_units_green.loc[finite_days], 0.0)
 
-        overlager_mask = finite_days & cap_mask
-        out.loc[overlager_mask, "Overlager (kr)"] = excess_units.loc[overlager_mask] * out.loc[overlager_mask, "unit_cost"]
+        overstock_mask = finite_days & cap_mask
+        out.loc[overstock_mask, "Excess stock (value)"] = excess_units.loc[overstock_mask] * out.loc[overstock_mask, "unit_cost"]
 
-        out["_econ_over"] = _safe_num_series(out["Overlager (kr)"]).fillna(0.0)
-        out["_econ_cap"] = _safe_num_series(out["Bundet kapital"]).fillna(0.0)
+        out["_econ_over"] = _safe_num_series(out["Excess stock (value)"]).fillna(0.0)
+        out["_econ_cap"] = _safe_num_series(out["Capital tied up"]).fillna(0.0)
 
     # Ranking buckets
     out["_bucket"] = 0
@@ -360,69 +365,69 @@ def _compute_flow_core(
 
     out["_econ_effect"] = np.maximum(out["_econ_over"], out["_econ_cap"])
 
-    # Prioritet forklaring (100% dansk)
+    # Priority (why) (English)
     def _status_part(s: str) -> str:
         s = str(s)
-        if s.startswith("🔴 Dødt lager"):
-            return "Status: Dødt lager"
-        if s.startswith("🔴 Dataproblem"):
-            return "Status: Dataproblem"
+        if s.startswith("🔴 Dead stock"):
+            return "Status: Dead stock"
+        if s.startswith("🔴 Data issue"):
+            return "Status: Data issue"
         if s.startswith("🔴"):
-            return "Status: Kritisk"
-        if s.startswith("🟡 Langsomt omsat"):
-            return "Status: Langsomt omsat"
+            return "Status: Critical"
+        if s.startswith("🟡 Slow mover"):
+            return "Status: Slow mover"
         if s.startswith("🟡"):
-            return "Status: Risiko"
-        return "Status: OK"
+            return "Status: At risk"
+        return "Status: Healthy"
 
     status_txt = out["Status"].astype(str).apply(_status_part)
-    boost_txt = np.where(dead_stock, "Boost: dødt lager", np.where(data_issue, "Boost: data", "Boost: -"))
+    boost_txt = np.where(dead_stock, "Boost: dead stock", np.where(data_issue, "Boost: data", "Boost: -"))
 
-    over_v = _safe_num_series(out.get("Overlager (kr)", pd.Series(index=out.index, dtype=float))).fillna(0.0)
-    cap_v = _safe_num_series(out.get("Bundet kapital", pd.Series(index=out.index, dtype=float))).fillna(0.0)
+    over_v = _safe_num_series(out.get("Excess stock (value)", pd.Series(index=out.index, dtype=float))).fillna(0.0)
+    cap_v = _safe_num_series(out.get("Capital tied up", pd.Series(index=out.index, dtype=float))).fillna(0.0)
 
     econ_txt = np.where(
         over_v > 0,
-        "Kr-effekt: " + over_v.round(0).astype(int).astype(str) + " overlager",
+        "Value impact: " + over_v.round(0).astype(int).astype(str) + " excess",
         np.where(
             cap_v > 0,
-            "Kr-effekt: " + cap_v.round(0).astype(int).astype(str) + " bundet",
-            "Kr-effekt: -",
+            "Value impact: " + cap_v.round(0).astype(int).astype(str) + " tied up",
+            "Value impact: -",
         ),
     )
 
     days_txt = np.where(
         mask_red | mask_yellow,
-        "Dage over: +" + out["_days_over"].round(0).astype(int).astype(str),
-        "Dage over: -",
+        "Days over: +" + out["_days_over"].round(0).astype(int).astype(str),
+        "Days over: -",
     )
-    out["Prioritet (forklaring)"] = status_txt + " · " + boost_txt + " · " + days_txt + " · " + econ_txt
+    out["Priority (why)"] = status_txt + " · " + boost_txt + " · " + days_txt + " · " + econ_txt
 
     # Sort
     out = out.sort_values(
-        ["_bucket", "_days_over", "_econ_effect", "Produkt"],
+        ["_bucket", "_days_over", "_econ_effect", "Product"],
         ascending=[False, False, False, True],
         kind="mergesort",
     ).reset_index(drop=True)
 
-    out["Prioritet"] = np.arange(1, len(out) + 1)
+    out["Priority"] = np.arange(1, len(out) + 1)
 
     cols = [
-        "Prioritet",
+        "Priority",
         "Status",
-        "Produkt",
-        "Lager (mængde)",
-        "Lagerdage",
-        "Bundet kapital",
-        "Overlager (kr)",
-        "Hvorfor",
-        "Anbefalet handling",
+        "Product",
+        "Stock (units)",
+        "Days of stock",
+        "Capital tied up",
+        "Excess stock (value)",
+        "Why",
+        "Recommended action",
     ]
 
     if show_details_val:
-        cols.insert(cols.index("Status") + 1, "Prioritet (forklaring)")
-        cols.insert(cols.index("Lagerdage") + 1, "Stop indkøb → tomt om")
-        cols.insert(cols.index("Hvorfor") + 1, "Hvorfor (detaljer)")
+        cols.insert(cols.index("Status") + 1, "Priority (why)")
+        cols.insert(cols.index("Days of stock") + 1, "If you stop reordering: OOS in")
+        cols.insert(cols.index("Why") + 1, "Why (details)")
 
     return out[cols]
 
@@ -440,38 +445,40 @@ def compute_flow_cached(
 
 
 # ---------------- UI PIECES ----------------
-def column_config(show_details_val: bool, enhed: str):
-    lager_title = f"Lager ({enhed})" if enhed else "Lager (mængde)"
-    kost_help = (
-        f"Hele lagerets værdi (mængde × indkøbspris pr {enhed})." if enhed else "Hele lagerets værdi (mængde × indkøbspris)."
+def column_config(show_details_val: bool, unit: str):
+    stock_title = f"Stock ({unit})" if unit else "Stock (units)"
+    cap_help = (
+        f"Total inventory value (stock × unit cost per {unit})." if unit else "Total inventory value (stock × unit cost)."
     )
     over_help = (
-        f"Overskud over sundt flow (over 🟢-niveau) i kr. ({enhed}-basis)." if enhed else "Overskud over sundt flow (over 🟢-niveau)."
+        f"Value above healthy flow (above 🟢 threshold) — in your currency ({unit}-based)."
+        if unit
+        else "Value above healthy flow (above 🟢 threshold)."
     )
 
     cfg = {
-        "Lager (mængde)": st.column_config.NumberColumn(lager_title, format="%.0f"),
-        "Lagerdage": st.column_config.NumberColumn("Lagerdage", format="%.0f"),
-        "Bundet kapital": st.column_config.NumberColumn("Bundet kapital", format="%.0f kr", help=kost_help),
-        "Overlager (kr)": st.column_config.NumberColumn("Overlager (kr)", format="%.0f kr", help=over_help),
-        "Stop indkøb → tomt om": st.column_config.NumberColumn("Stop indkøb → tomt om", format="%.0f dage"),
-        "Prioritet": st.column_config.NumberColumn(
-            "Prioritet",
+        "Stock (units)": st.column_config.NumberColumn(stock_title, format="%.0f"),
+        "Days of stock": st.column_config.NumberColumn("Days of stock", format="%.0f"),
+        "Capital tied up": st.column_config.NumberColumn("Capital tied up", format="%.0f", help=cap_help),
+        "Excess stock (value)": st.column_config.NumberColumn("Excess stock (value)", format="%.0f", help=over_help),
+        "If you stop reordering: OOS in": st.column_config.NumberColumn("If you stop reordering: OOS in", format="%.0f days"),
+        "Priority": st.column_config.NumberColumn(
+            "Priority",
             format="%.0f",
-            help="Sortering: status (værst først) + boost (dødt lager/data) + dage over grænse + kr-effekt.",
+            help="Sorting: worst status first + boost (dead stock/data) + days beyond threshold + value impact.",
         ),
-        "Hvorfor": st.column_config.TextColumn("Hvorfor", help="Diagnose i én linje (kort + uden handling)."),
+        "Why": st.column_config.TextColumn("Why", help="One-line diagnosis (no actions)."),
     }
     if show_details_val:
-        cfg["Prioritet (forklaring)"] = st.column_config.TextColumn(
-            "Prioritet (forklaring)",
-            help="Mini-breakdown: status-vægt + boost + dage over grænse + kr-effekt.",
+        cfg["Priority (why)"] = st.column_config.TextColumn(
+            "Priority (why)",
+            help="Mini breakdown: status weight + boost + days beyond threshold + value impact.",
             width="large",
         )
     return cfg
 
 
-def plan_for_flow_sundhed(df_result: pd.DataFrame, target: float) -> str:
+def plan_for_flow_health(df_result: pd.DataFrame, target: float) -> str:
     total = len(df_result)
     if total <= 0:
         return ""
@@ -480,37 +487,37 @@ def plan_for_flow_sundhed(df_result: pd.DataFrame, target: float) -> str:
     required_green = int(np.ceil(target * total))
     needed = max(required_green - green, 0)
     if needed <= 0:
-        return "✅ Du er på mål – fokusér på at holde 🟢 stabil (undgå nye 🔴/🟡)."
+        return "✅ You’re on target — keep 🟢 stable (avoid new 🔴/🟡)."
 
     candidates = df_result[df_result["Status"].astype(str).str.startswith(("🔴", "🟡"))].copy()
     if len(candidates) == 0:
-        return f"For at nå {target*100:.0f}% grøn mangler der ca. {needed} produkter – men der er ingen 🔴/🟡 at flytte. (Tjek data/labels.)"
+        return f"To reach {target*100:.0f}% green you need ~{needed} products — but there are no 🔴/🟡 items to move. (Check data/labels.)"
 
-    if "Prioritet" in candidates.columns:
-        candidates = candidates.sort_values("Prioritet", ascending=True, kind="mergesort")
+    if "Priority" in candidates.columns:
+        candidates = candidates.sort_values("Priority", ascending=True, kind="mergesort")
     top = candidates.head(needed)
 
-    h = top.get("Anbefalet handling", pd.Series([""] * len(top))).fillna("").astype(str).str.lower()
-    data_fix = int(h.str.contains("ret data|fix data").sum())
-    stop_buy = int(h.str.contains("stop indkøb|stop køb|genbestilling").sum())
-    pricing = int(h.str.contains("reducer lager|kampagne|pakkeløsning|pris|bundle|markdown").sum())
-    phase_out = int(h.str.contains("afviklingsplan|udfasning|afvikling").sum())
+    h = top.get("Recommended action", pd.Series([""] * len(top))).fillna("").astype(str).str.lower()
+    data_fix = int(h.str.contains("fix input data|fix data").sum())
+    stop_buy = int(h.str.contains("stop reorders|stop purchasing|pause reorders").sum())
+    pricing = int(h.str.contains("reduce inventory|promo|bundle|price|markdown|liquidation").sum())
+    phase_out = int(h.str.contains("phase out|liquidation plan|phase-out plan").sum())
 
     buckets = []
     if pricing > 0:
-        buckets.append(f"pris/kampagne på {pricing}")
+        buckets.append(f"pricing/promo for {pricing}")
     if stop_buy > 0:
-        buckets.append(f"pause/stop indkøb på {stop_buy}")
+        buckets.append(f"pause/stop reorders for {stop_buy}")
     if phase_out > 0:
-        buckets.append(f"afvikling/udfasning på {phase_out}")
+        buckets.append(f"phase-out for {phase_out}")
     if data_fix > 0:
-        buckets.append(f"data-rettelser på {data_fix}")
+        buckets.append(f"data fixes for {data_fix}")
 
-    buckets_txt = "primært via " + " + ".join(buckets) if buckets else "primært via de højst prioriterede 🔴/🟡-varer"
-    return f"For at nå {target*100:.0f}% grøn skal ca. {needed} produkter flyttes fra 🔴/🟡 → 🟢 ({buckets_txt})."
+    buckets_txt = "mainly via " + " + ".join(buckets) if buckets else "mainly via the highest-priority 🔴/🟡 items"
+    return f"To reach {target*100:.0f}% green, ~{needed} products must move from 🔴/🟡 → 🟢 ({buckets_txt})."
 
 
-def top3_fokuslinjer(df_result: pd.DataFrame) -> list[str]:
+def top3_focus_lines(df_result: pd.DataFrame) -> list[str]:
     if len(df_result) == 0:
         return []
 
@@ -519,12 +526,12 @@ def top3_fokuslinjer(df_result: pd.DataFrame) -> list[str]:
     if len(d) == 0:
         return []
 
-    over = pd.to_numeric(d.get("Overlager (kr)", pd.Series(index=d.index, dtype=float)), errors="coerce").fillna(0.0)
-    cap = pd.to_numeric(d.get("Bundet kapital", pd.Series(index=d.index, dtype=float)), errors="coerce").fillna(0.0)
+    over = pd.to_numeric(d.get("Excess stock (value)", pd.Series(index=d.index, dtype=float)), errors="coerce").fillna(0.0)
+    cap = pd.to_numeric(d.get("Capital tied up", pd.Series(index=d.index, dtype=float)), errors="coerce").fillna(0.0)
 
     d["_over"] = over
     d["_cap"] = cap
-    d["_is_dead"] = d["Status"].astype(str).str.contains("Dødt lager", case=False, na=False)
+    d["_is_dead"] = d["Status"].astype(str).str.contains("Dead stock", case=False, na=False)
 
     chosen_idx = []
 
@@ -539,8 +546,8 @@ def top3_fokuslinjer(df_result: pd.DataFrame) -> list[str]:
 
     if len(chosen_idx) < 3:
         remaining = d[~d.index.isin(chosen_idx)].copy()
-        if "Prioritet" in remaining.columns:
-            remaining = remaining.sort_values("Prioritet", ascending=True, kind="mergesort")
+        if "Priority" in remaining.columns:
+            remaining = remaining.sort_values("Priority", ascending=True, kind="mergesort")
         fill = remaining.head(3 - len(chosen_idx))
         chosen_idx.extend(list(fill.index))
 
@@ -548,27 +555,27 @@ def top3_fokuslinjer(df_result: pd.DataFrame) -> list[str]:
 
     lines = []
     for i, (_, row) in enumerate(picked.iterrows(), start=1):
-        prod = str(row.get("Produkt", "")).strip()
-        act = kort_handling(str(row.get("Anbefalet handling", "")))
+        prod = str(row.get("Product", "")).strip()
+        act = short_action(str(row.get("Recommended action", "")))
 
         if bool(row.get("_is_dead", False)):
-            lines.append(f"{i}) {prod}: dødt lager → {act}")
+            lines.append(f"{i}) {prod}: dead stock → {act}")
         else:
             if float(row.get("_over", 0.0)) > 0:
-                lines.append(f"{i}) {prod}: {fmt_kr(row.get('_over'))} overlager → {act}")
+                lines.append(f"{i}) {prod}: {fmt_kr(row.get('_over'))} excess → {act}")
             else:
                 if float(row.get("_cap", 0.0)) > 0:
-                    lines.append(f"{i}) {prod}: {fmt_kr(row.get('_cap'))} bundet → {act}")
+                    lines.append(f"{i}) {prod}: {fmt_kr(row.get('_cap'))} tied up → {act}")
                 else:
                     lines.append(f"{i}) {prod}: → {act}")
 
     return lines[:3]
 
 
-def render_overview_header(df_result: pd.DataFrame, target: float, enhed: str):
+def render_overview_header(df_result: pd.DataFrame, target: float, unit: str):
     total = len(df_result)
     if total == 0:
-        st.info("Ingen rækker at vise.")
+        st.info("No rows to display.")
         return
 
     s = df_result["Status"].astype(str)
@@ -578,66 +585,66 @@ def render_overview_header(df_result: pd.DataFrame, target: float, enhed: str):
 
     flow_health = green / total
     gap = max(target - flow_health, 0.0)
-    badge = "✅ På mål" if flow_health >= target else "⚠ Under mål"
+    badge = "✅ On target" if flow_health >= target else "⚠ Below target"
 
-    cap_total = float(pd.to_numeric(df_result.get("Bundet kapital", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-    over_total = float(pd.to_numeric(df_result.get("Overlager (kr)", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    cap_total = float(pd.to_numeric(df_result.get("Capital tied up", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    over_total = float(pd.to_numeric(df_result.get("Excess stock (value)", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
 
     c1, c2, c3, c4, c5, c6 = st.columns([1, 1, 1, 1.6, 1.6, 2.2])
     with c1:
-        st.metric("🔴 Rød", red)
+        st.metric("🔴 Red", red)
     with c2:
-        st.metric("🟡 Gul", yellow)
+        st.metric("🟡 Yellow", yellow)
     with c3:
-        st.metric("🟢 Grøn", green)
+        st.metric("🟢 Green", green)
 
     with c4:
         render_big_metric(
-            "💰 Bundet kapital (sum)",
+            "💰 Capital tied up (total)",
             fmt_kr(cap_total),
-            f"Hele lagerets værdi (mængde × indkøbspris pr {enhed})." if enhed else "Hele lagerets værdi (mængde × indkøbspris).",
+            f"Total inventory value (stock × unit cost per {unit})." if unit else "Total inventory value (stock × unit cost).",
         )
     with c5:
         render_big_metric(
-            "🔥 Overlager (sum)",
+            "🔥 Excess stock (total)",
             fmt_kr(over_total),
-            "Overskud over sundt flow (over 🟢-niveau).",
+            "Value above healthy flow (above 🟢 threshold).",
         )
 
     with c6:
-        st.write("🟢 Flow-sundhed")
+        st.write("🟢 Flow health")
         st.progress(flow_health)
-        st.caption(f"{badge} · {flow_health*100:.1f}% grøn · mål {target*100:.0f}% · gap {gap*100:.1f} %-point")
-        plan_line = plan_for_flow_sundhed(df_result, target)
+        st.caption(f"{badge} · {flow_health*100:.1f}% green · target {target*100:.0f}% · gap {gap*100:.1f} pts")
+        plan_line = plan_for_flow_health(df_result, target)
         if plan_line:
             st.caption("🧭 " + plan_line)
 
-    if enhed:
-        st.caption(f"📏 Enhed i denne fil: **{enhed}** (lager + salg skal være samme enhed)")
+    if unit:
+        st.caption(f"📏 Unit in this file: **{unit}** (stock + sales must use the same unit)")
 
-    fokus = top3_fokuslinjer(df_result)
-    if fokus:
-        st.markdown("**🎯 Top 3 fokus (hvad gør vi i dag?)**")
-        for line in fokus:
+    focus = top3_focus_lines(df_result)
+    if focus:
+        st.markdown("**🎯 Top 3 focus (what should you do today?)**")
+        for line in focus:
             st.markdown(f"- {line}")
 
 
-def render_handlinger(df_result: pd.DataFrame, show_details_val: bool, enhed: str):
-    st.subheader("⚡ Handlinger (det der kræver noget)")
-    st.caption("Standard: viser 🔴 + 🟡.")
+def render_actions(df_result: pd.DataFrame, show_details_val: bool, unit: str):
+    st.subheader("⚡ Actions (items that require attention)")
+    st.caption("Default view shows 🔴 + 🟡 only.")
 
-    show_green = st.toggle("Vis også 🟢 (inkludér alt)", value=False, key="actions_toggle_show_green")
+    show_green = st.toggle("Include 🟢 items (show all)", value=False, key="actions_toggle_show_green")
     if show_green:
         actions = df_result.copy()
     else:
         actions = df_result[df_result["Status"].astype(str).str.startswith(("🔴", "🟡"))].copy()
 
     if len(actions) == 0:
-        st.success("Ingen 🔴/🟡 – alt ser sundt ud 😄")
+        st.success("No 🔴/🟡 items — looks healthy 😄")
         return
 
-    limit = st.selectbox("Vis antal rækker", [20, 50, 100, "Alle"], index=0, key="actions_row_limit")
-    if limit != "Alle":
+    limit = st.selectbox("Rows to show", [20, 50, 100, "All"], index=0, key="actions_row_limit")
+    if limit != "All":
         actions = actions.head(int(limit))
 
     st.data_editor(
@@ -645,30 +652,30 @@ def render_handlinger(df_result: pd.DataFrame, show_details_val: bool, enhed: st
         hide_index=True,
         use_container_width=True,
         disabled=True,
-        column_config=column_config(show_details_val, enhed),
+        column_config=column_config(show_details_val, unit),
         key="data_editor_actions",
     )
 
 
-def render_alle_produkter(df_result: pd.DataFrame, show_details_val: bool, enhed: str):
-    st.subheader("📦 Alle produkter (værst → bedst)")
+def render_all_products(df_result: pd.DataFrame, show_details_val: bool, unit: str):
+    st.subheader("📦 All products (worst → best)")
     st.data_editor(
         df_for_display(df_result),
         hide_index=True,
         use_container_width=True,
         disabled=True,
-        column_config=column_config(show_details_val, enhed),
+        column_config=column_config(show_details_val, unit),
         key="data_editor_all",
     )
 
 
 def download_section(df_result: pd.DataFrame):
-    st.subheader("⬇️ Download resultat")
-    st.caption("Download indeholder rigtige tal (Excel-venligt).")
+    st.subheader("⬇️ Download results")
+    st.caption("Downloads contain raw numbers (Excel-friendly).")
 
     csv_bytes = df_result.to_csv(index=False, sep=";").encode("utf-8")
     st.download_button(
-        label="⬇️ Download CSV (Excel-venlig)",
+        label="⬇️ Download CSV (Excel-friendly)",
         data=csv_bytes,
         file_name="inventoryflow_result.csv",
         mime="text/csv",
@@ -690,38 +697,38 @@ def download_section(df_result: pd.DataFrame):
 
 
 # ---------------- TOP: UPLOAD + HELP ----------------
-with st.expander("✅ Hvilket format skal filen have?", expanded=True):
+with st.expander("✅ Required file format", expanded=True):
     st.markdown(
         """
-**Din fil skal have disse kolonner:**
-- `product_name` (tekst)
-- `stock_qty` (tal) – lager mængde (samme enhed som salg)
-- `sales_30d` (tal) – solgt de sidste 30 dage (samme enhed som lager)
+**Your file must include these columns:**
+- `product_name` (text)
+- `stock_qty` (number) – current stock on hand (same unit as sales)
+- `sales_30d` (number) – units sold in the last 30 days (same unit as stock)
 
-**Valgfrit (for kroner/impact):**
-- `unit_cost` (tal) – indkøbspris pr enhed (fx kr/stk, kr/kg, kr/l)
+**Optional (to calculate financial impact):**
+- `unit_cost` (number) – cost per unit (e.g. currency/unit)
 
-**Bonus (for vindue til dødt lager):**
-- `sales_90d`, `sales_180d`, osv. (matcher skyderen hvis den findes)
+**Bonus (for dead stock windows):**
+- `sales_90d`, `sales_180d`, etc. (must match the slider value if the column exists)
 """
     )
 
-st.subheader("Upload fil")
-uploaded = st.file_uploader("Vælg CSV eller Excel", type=["csv", "xlsx"], accept_multiple_files=False)
+st.subheader("Upload file")
+uploaded = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx"], accept_multiple_files=False)
 
 # ---------------- TABS ----------------
-tab_overview, tab_all, tab_settings = st.tabs(["📊 Overblik", "📦 Alle produkter", "⚙️ Indstillinger + Download"])
+tab_overview, tab_all, tab_settings = st.tabs(["📊 Overview", "📦 All products", "⚙️ Settings + Download"])
 
 with tab_settings:
-    st.subheader("🔧 Justér regler")
-    st.caption("Tip: Hold dette faneblad lukket for de fleste brugere. Det er her man finjusterer.")
+    st.subheader("🔧 Tune rules")
+    st.caption("Tip: Keep this tab closed for most users. This is for fine-tuning.")
 
     col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1.2])
     with col_a:
-        green_max = st.number_input("🟢 Grøn op til (lagerdage)", min_value=1, max_value=2000, value=120, step=10, key="set_green")
+        green_max = st.number_input("🟢 Green up to (days of stock)", min_value=1, max_value=2000, value=120, step=10, key="set_green")
     with col_b:
         yellow_max = st.number_input(
-            "🟡 Gul op til (lagerdage)",
+            "🟡 Yellow up to (days of stock)",
             min_value=int(green_max) + 1,
             max_value=3000,
             value=240,
@@ -729,23 +736,23 @@ with tab_settings:
             key="set_yellow",
         )
     with col_c:
-        st.markdown("**🔴 Rød** er alt over 🟡-grænsen")
+        st.markdown("**🔴 Red** is anything above the 🟡 threshold")
 
     with col_d:
-        enhed = st.selectbox(
-            "📏 Enhed",
-            options=["stk", "kg", "l", "m", "kasse", "palle", "andet"],
+        unit = st.selectbox(
+            "📏 Unit",
+            options=["pcs", "kg", "l", "m", "case", "pallet", "other"],
             index=0,
-            help="Vælg den enhed som 'stock_qty' og 'sales_30d' er målt i. Lager og salg skal være samme enhed.",
-            key="set_enhed",
+            help="Select the unit used in `stock_qty` and `sales_30d`. Stock and sales must use the same unit.",
+            key="set_unit",
         )
-        if enhed == "andet":
-            enhed = st.text_input("Skriv enhed (fx 'ton', 'meter', 'pakke')", value="enhed", key="set_enhed_custom").strip() or "enhed"
+        if unit == "other":
+            unit = st.text_input("Custom unit (e.g. 'ton', 'meter', 'pack')", value="unit", key="set_unit_custom").strip() or "unit"
 
     st.divider()
 
     dead_stock_days = st.slider(
-        "⏳ Dødt lager hvis ingen salg i (dage)",
+        "⏳ Dead stock if no sales in (days)",
         min_value=30,
         max_value=365,
         value=90,
@@ -753,15 +760,15 @@ with tab_settings:
         key="set_dead_stock_days",
     )
     st.caption(
-        "Hvis du kun har `sales_30d` i filen, kan vi ikke bevise 'ingen salg i 90 dage'. "
-        "Så ved tærskel > 30 bliver 0 i 30 dage behandlet som 🟡 langsomt omsat (ikke 🔴). "
-        "Hvis du også uploader `sales_90d` (eller matchende kolonne), bliver det helt præcist."
+        "If your file only includes `sales_30d`, we can’t prove “no sales in 90 days.” "
+        "So when the threshold is > 30, items with 0 sales in 30 days are treated as 🟡 Slow mover (not 🔴 Dead stock). "
+        "If you also upload `sales_90d` (or the matching column), it becomes exact."
     )
 
     st.divider()
 
     flow_target_pct = st.slider(
-        "🎯 Mål for flow-sundhed (% grøn)",
+        "🎯 Flow health target (% green)",
         min_value=50,
         max_value=100,
         value=85,
@@ -772,17 +779,17 @@ with tab_settings:
 
     st.divider()
 
-    show_details = st.toggle("🔎 Vis detaljer (ekstra forklaring + tomt-om)", value=False, key="set_details")
-    st.caption("Detaljer OFF som standard. Slå ON til når du skal forklare beslutningen.")
+    show_details = st.toggle("🔎 Show details (extra context + OOS estimate)", value=False, key="set_details")
+    st.caption("Details OFF by default. Turn ON when you need to explain decisions.")
 
-# Defaults (før upload) for at undgå NameError
+# Defaults (before upload) to avoid NameError
 if "green_max" not in globals():
     green_max = 120
     yellow_max = 240
     dead_stock_days = 90
     flow_target = 0.85
     show_details = False
-    enhed = "stk"
+    unit = "pcs"
 
 # ---------------- RUN ----------------
 if uploaded:
@@ -798,25 +805,24 @@ if uploaded:
         )
 
         with tab_overview:
-            st.success("Flow-status + plan + økonomisk impact (værst → bedst)")
-            render_overview_header(result, flow_target, enhed)
+            st.success("Risk signals + action plan + optional financial impact (worst → best)")
+            render_overview_header(result, flow_target, unit)
             st.divider()
-            render_handlinger(result, show_details, enhed)
+            render_actions(result, show_details, unit)
 
         with tab_all:
-            render_alle_produkter(result, show_details, enhed)
+            render_all_products(result, show_details, unit)
 
         with tab_settings:
             st.divider()
             download_section(result)
 
     except Exception as e:
-        st.error(f"Kunne ikke læse/beregne filen: {e}")
+        st.error(f"Could not read/compute the file: {e}")
 else:
     with tab_overview:
-        st.info("Upload en fil for at se Overblik + Handlinger.")
+        st.info("Upload a file to see Overview + Actions.")
     with tab_all:
-        st.info("Upload en fil for at se alle produkter.")
+        st.info("Upload a file to see all products.")
     with tab_settings:
-        st.info("Upload en fil for at få download-knapper.")
-
+        st.info("Upload a file to enable downloads.")
